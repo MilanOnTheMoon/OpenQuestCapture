@@ -2,6 +2,7 @@
     "name": "RealityLog.Depth",
     "rootNamespace": "RealityLog.Depth",
     "references": [
+        "GUID:04376767bc1f3b428aefa3d20743e819",
         "GUID:f64c9ebcd7899c3448a08dc9f9ddbe30",
         "GUID:e144d031c3c40ef4d960edaa656bd4ca",
         "GUID:da3029612d6475548bc412c4e03987e1",

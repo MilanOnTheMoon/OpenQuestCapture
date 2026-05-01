@@ -6,6 +6,7 @@ using UnityEngine;
 using UnityEngine.Android;
 using RealityLog.Common;
 using RealityLog.IO;
+using System.Collections;
 
 namespace RealityLog.Depth
 {
@@ -20,6 +21,13 @@ namespace RealityLog.Depth
                 "near_z", "far_z",
                 "width", "height"
             };
+
+        // My fields for backend export
+        [SerializeField] private DepthPacketSender packetSender = default!;
+        [SerializeField] private string deviceId = "quest_01";
+        [SerializeField] private bool streamLeftDepth = true;
+        [SerializeField] private bool streamRightDepth = false;
+
 
         [HideInInspector]
         [SerializeField] private ComputeShader copyDepthMapShader = default!;
@@ -50,6 +58,16 @@ namespace RealityLog.Depth
         {
             get => directoryName;
             set => directoryName = value;
+        }
+
+        // Utility to read raw depth data back as float array for packet sending
+        private static float[] ReadDepthRawAsFloatArray(string path)
+        {
+            byte[] bytes = File.ReadAllBytes(path);
+            int count = bytes.Length / sizeof(float);
+            float[] result = new float[count];
+            Buffer.BlockCopy(bytes, 0, result, 0, bytes.Length);
+            return result;
         }
 
         public void StartExport()
@@ -86,6 +104,21 @@ namespace RealityLog.Depth
 
         private void Start()
         {
+            Debug.Log("[DepthExporter] Start() running.");
+
+            if (packetSender == null)
+            {
+                Debug.Log("[DepthExporter] packetSender is null, finding/creating sender.");
+
+                packetSender = FindFirstObjectByType<DepthPacketSender>();
+
+                if (packetSender == null)
+                {
+                    Debug.Log("[DepthExporter] Creating DepthPacketSender.");
+                    var senderObject = new GameObject("DepthPacketSender");
+                    packetSender = senderObject.AddComponent<DepthPacketSender>();
+                }
+            }
             baseOvrTimeSec = OVRPlugin.GetTimeInSeconds();
             baseUnixTimeMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
 
@@ -198,6 +231,107 @@ namespace RealityLog.Depth
                 var rightDepthFilePath = Path.Join(Application.persistentDataPath, DirectoryName, $"{rightDepthMapDirectoryName}/{unixTime}.raw");
 
                 renderTextureExporter.Export(renderTexture, leftDepthFilePath, rightDepthFilePath);
+                Debug.Log($"[DepthExporter] Exported raw depth files. left={leftDepthFilePath}");
+
+                Debug.Log("[DepthExporter] About to build/send depth packet.");
+                Debug.Log("[DepthExporter] packetSender null? " + (packetSender == null));
+
+                // Send packets to backend
+                if (packetSender != null)
+                {
+                    Debug.Log("[DepthExporter] packetSender exists. Building packet.");
+                    Debug.Log("[DepthExporter] streamLeftDepth = " + streamLeftDepth);
+                    if (streamLeftDepth)
+                    {
+                        // try
+                        // {
+                            var leftFrame = frameDescriptors[0];
+
+                            Debug.Log("[DepthExporter] Checking left file exists: " + File.Exists(leftDepthFilePath));
+
+                            //var leftDepth = ReadDepthRawAsFloatArray(leftDepthFilePath);
+                            StartCoroutine(SendDepthWhenFileReady(
+                                leftDepthFilePath,
+                                "left",
+                                ConvertTimestampNsToUnixTimeMs(leftFrame.timestampNs),
+                                leftFrame.createPoseLocation,
+                                leftFrame.createPoseRotation,
+                                leftFrame.fovLeftAngleTangent,
+                                leftFrame.fovRightAngleTangent,
+                                leftFrame.fovTopAngleTangent,
+                                leftFrame.fovDownAngleTangent,
+                                leftFrame.nearZ,
+                                leftFrame.farZ,
+                                width,
+                                height
+                            ));
+
+                        //     Debug.Log($"[DepthExporter] Read left depth. count={leftDepth.Length}");
+
+                        //     var leftPacket = new DepthPacket
+                        //     {
+                        //         deviceId = deviceId,
+                        //         camera = "left",
+                        //         timestampMs = ConvertTimestampNsToUnixTimeMs(leftFrame.timestampNs),
+                        //         depth = leftDepth
+                        //     };
+
+                        //     Debug.Log("[DepthExporter] Calling packetSender.SendPacket(leftPacket).");
+                        //     packetSender.SendPacket(leftPacket);
+                        // }
+                        // catch (Exception ex)
+                        // {
+                        //     Debug.LogError("[DepthExporter] LEFT SEND FAILED: " + ex);
+                        // }
+                    }
+
+                    Debug.Log("[DepthExporter] streamRightDepth = " + streamRightDepth);
+                    if (streamRightDepth)
+                    {
+                        var rightFrame = frameDescriptors[1];
+                        var rightDepth = ReadDepthRawAsFloatArray(rightDepthFilePath);
+
+                        Debug.Log($"[DepthExporter] Read right depth. count={rightDepth.Length}");
+
+                        var rightPacket = new DepthPacket
+                        {
+                            deviceId = deviceId,
+                            camera = "right",
+                            timestampMs = ConvertTimestampNsToUnixTimeMs(rightFrame.timestampNs),
+
+                            position = new float[]
+                            {
+                                rightFrame.createPoseLocation.x,
+                                rightFrame.createPoseLocation.y,
+                                rightFrame.createPoseLocation.z
+                            },
+
+                            rotation = new float[]
+                            {
+                                rightFrame.createPoseRotation.x,
+                                rightFrame.createPoseRotation.y,
+                                rightFrame.createPoseRotation.z,
+                                rightFrame.createPoseRotation.w
+                            },
+
+                            fovLeftTangent = rightFrame.fovLeftAngleTangent,
+                            fovRightTangent = rightFrame.fovRightAngleTangent,
+                            fovTopTangent = rightFrame.fovTopAngleTangent,
+                            fovDownTangent = rightFrame.fovDownAngleTangent,
+
+                            nearZ = rightFrame.nearZ,
+                            farZ = rightFrame.farZ,
+
+                            width = width,
+                            height = height,
+                            depth = rightDepth
+                        };
+
+                        Debug.Log("[DepthExporter] Calling packetSender.SendPacket(rightPacket).");
+                        packetSender.SendPacket(rightPacket);
+                    }
+                }
+
 
                 for (var i = 0; i < FRAME_DESC_COUNT; ++i)
                 {
@@ -237,6 +371,81 @@ namespace RealityLog.Depth
             var deltaMs = (long) (timestampNs / 1.0e6 - baseOvrTimeSec * 1000.0);
             return baseUnixTimeMs + deltaMs;
         }
+
+       private IEnumerator SendDepthWhenFileReady(
+        string path,
+        string cameraName,
+        long timestampMs,
+        Vector3 position,
+        Quaternion rotation,
+        float fovLeftTangent,
+        float fovRightTangent,
+        float fovTopTangent,
+        float fovDownTangent,
+        float nearZ,
+        float farZ,
+        int width,
+        int height)
+    {
+        float timeout = 1.0f;
+        float timer = 0f;
+
+        while (!File.Exists(path) && timer < timeout)
+        {
+            timer += 0.05f;
+            yield return new WaitForSeconds(0.05f);
+        }
+
+        if (!File.Exists(path))
+        {
+            Debug.LogError("[DepthExporter] Timed out waiting for file: " + path);
+            yield break;
+        }
+
+        Debug.Log($"[DepthExporter] {cameraName} file ready. Reading: {path}");
+
+        var depth = ReadDepthRawAsFloatArray(path);
+
+        Debug.Log($"[DepthExporter] Read {cameraName} depth. count={depth.Length}");
+
+        var packet = new DepthPacket
+        {
+            deviceId = deviceId,
+            camera = cameraName,
+            timestampMs = timestampMs,
+
+            position = new float[]
+            {
+                position.x,
+                position.y,
+                position.z
+            },
+
+            rotation = new float[]
+            {
+                rotation.x,
+                rotation.y,
+                rotation.z,
+                rotation.w
+            },
+
+            fovLeftTangent = fovLeftTangent,
+            fovRightTangent = fovRightTangent,
+            fovTopTangent = fovTopTangent,
+            fovDownTangent = fovDownTangent,
+
+            nearZ = nearZ,
+            farZ = farZ,
+
+            width = width,
+            height = height,
+
+            depth = depth
+        };
+
+        Debug.Log($"[DepthExporter] Calling packetSender.SendPacket({cameraName}).");
+        packetSender.SendPacket(packet);
+    }
 
 #if UNITY_EDITOR
         private void OnValidate()
